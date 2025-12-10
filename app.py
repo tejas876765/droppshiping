@@ -2,184 +2,271 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from pathlib import Path
-import matplotlib.pyplot as plt
 import plotly.express as px
 from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
 import io
 
-st.set_page_config(page_title="Dropshipping Analytics (Upgraded)", layout="wide", initial_sidebar_state="expanded")
+# ------------------------------------------------
+# STREAMLIT CONFIG
+# ------------------------------------------------
+st.set_page_config(
+    page_title="Dropshipping Analytics",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# ---------- Helpers ----------
+# GLOBAL STYLES
+st.markdown("""
+    <style>
+        .metric-card {
+            background: #ffffff;
+            padding: 18px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+        }
+        .stDataFrame { border-radius: 10px; }
+    </style>
+""", unsafe_allow_html=True)
+
+
+# ------------------------------------------------
+# HELPERS
+# ------------------------------------------------
+
 def infer_columns(df):
+    """
+    Intelligent column detection: finds most meaningful column names.
+    """
     lower = [c.lower() for c in df.columns]
+
     def find(hints):
         for h in hints:
-            for i,c in enumerate(lower):
+            for i, c in enumerate(lower):
                 if h in c:
                     return df.columns[i]
         return None
-    info = {}
-    info["date"] = find(["date","order_date","created","timestamp","day"])
-    info["product"] = find(["product","title","name","sku","asin"])
-    info["category"] = find(["category","type"])
-    info["orders"] = find(["qty","quantity","units","orders","sold","sales_count","order"])
-    info["revenue"] = find(["revenue","sales","gmv","amount","turnover","total"])
-    info["price"] = find(["price","selling_price","sale_price"])
-    info["cost"] = find(["cost","cogs","buy_cost"])
-    info["returns"] = find(["return","refund"])
-    info["rating"] = find(["rating","review","stars"])
-    info["region"] = find(["country","region","market","city","state","geo"])
-    info["stock"] = find(["stock","inventory","on_hand"])
-    info["numeric_cols"] = df.select_dtypes(include=[np.number]).columns.tolist()
-    return info
+
+    return {
+        "date": find(["date", "order_date", "timestamp"]),
+        "product": find(["product", "title", "item", "sku"]),
+        "category": find(["category", "type"]),
+        "orders": find(["orders", "qty", "quantity", "units"]),
+        "revenue": find(["revenue", "sales", "gmv", "amount"]),
+        "price": find(["price", "selling_price"]),
+        "cost": find(["cost", "cogs", "buy_cost"]),
+        "returns": find(["return", "refund"]),
+        "rating": find(["rating", "review"]),
+        "region": find(["country", "region", "market", "geo"]),
+    }
+
 
 def load_dataset(uploaded_file):
-    try:    df = pd.read_csv(uploaded_file)
-    except: upload.seek(0); df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode("utf-8")))
-    return df
+    try:
+        return pd.read_csv(uploaded_file)
+    except:
+        uploaded_file.seek(0)
+        raw = uploaded_file.getvalue().decode("utf-8")
+        return pd.read_csv(io.StringIO(raw))
+
 
 def safe_sum(series):
-    try: return float(series.sum())
-    except: return np.nan
+    return float(series.sum()) if series is not None else np.nan
 
-# UI
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Home","KPIs","Trends","Products","Categories","Regions","Forecast","Settings"])
 
+# ------------------------------------------------
+# SIDEBAR
+# ------------------------------------------------
+st.sidebar.title("📦 Dropshipping Dashboard")
 st.sidebar.markdown("---")
+
 uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+sample_path = Path("dropshipping_model_dataset_1000.csv")
 
 use_sample = False
-sample_path = Path("dropshipping_model_dataset_1000.csv")
 if not uploaded and sample_path.exists():
     use_sample = st.sidebar.checkbox("Use sample dataset", value=True)
 
-if uploaded: df = load_dataset(uploaded)
-elif use_sample: df = pd.read_csv(sample_path)
+# Load data
+if uploaded:
+    df = load_dataset(uploaded)
+elif use_sample:
+    df = pd.read_csv(sample_path)
 else:
-    st.title("📦 Dropshipping Analytics (Upgraded)")
-    st.info("Upload CSV from sidebar or include sample dataset.")
+    st.title("📦 Dropshipping Analytics Dashboard")
+    st.info("Upload a CSV file or enable the sample dataset from sidebar.")
     st.stop()
 
 info = infer_columns(df)
 
-# Coerce date column
-if info["date"] and info["date"] in df.columns:
+# Parse date
+if info["date"] in df.columns:
     df[info["date"]] = pd.to_datetime(df[info["date"]], errors="coerce")
-else:
-    df["_row_id_"] = np.arange(len(df))
 
-# Sidebar filters
+# Sidebar Filters
 st.sidebar.markdown("### Filters")
-if info["date"] and info["date"] in df.columns:
+
+if info["date"]:
     min_d, max_d = df[info["date"]].min(), df[info["date"]].max()
-    start_date, end_date = st.sidebar.date_input("Date range", [min_d.date(), max_d.date()])
-    df = df[(df[info["date"]] >= pd.to_datetime(start_date)) & (df[info["date"]] <= pd.to_datetime(end_date))]
+    date_range = st.sidebar.date_input(
+        "Date Range",
+        [min_d, max_d] if not pd.isna(min_d) else []
+    )
+    if len(date_range) == 2:
+        df = df[(df[info["date"]] >= pd.to_datetime(date_range[0])) &
+                (df[info["date"]] <= pd.to_datetime(date_range[1]))]
 
-if info["category"] and info["category"] in df.columns:
-    cats = ["All"] + sorted(df[info["category"]].dropna().unique().astype(str).tolist())
+if info["category"]:
+    cats = ["All"] + sorted(df[info["category"]].dropna().astype(str).unique())
     s_cat = st.sidebar.selectbox("Category", cats)
-    if s_cat != "All": df = df[df[info["category"]].astype(str) == s_cat]
+    if s_cat != "All":
+        df = df[df[info["category"]].astype(str) == s_cat]
 
-if info["region"] and info["region"] in df.columns:
-    regs = ["All"] + sorted(df[info["region"]].dropna().unique().astype(str).tolist())
+if info["region"]:
+    regs = ["All"] + sorted(df[info["region"]].dropna().astype(str).unique())
     s_reg = st.sidebar.selectbox("Region", regs)
-    if s_reg != "All": df = df[df[info["region"]].astype(str) == s_reg]
+    if s_reg != "All":
+        df = df[df[info["region"]].astype(str) == s_reg]
 
-# Calculations
-rev_c = info["revenue"]
-ord_c = info["orders"]
-cos_c = info["cost"]
 
-total_revenue = safe_sum(df[rev_c]) if rev_c else np.nan
-total_orders  = safe_sum(df[ord_c]) if ord_c else np.nan
-total_cost    = safe_sum(df[cos_c]) if cos_c else np.nan
-profit = total_revenue - total_cost if np.isfinite(total_revenue) and np.isfinite(total_cost) else np.nan
-avg_order = total_revenue/total_orders if total_orders and np.isfinite(total_orders) else np.nan
+# ------------------------------------------------
+# KPIs
+# ------------------------------------------------
+rev_col = info["revenue"]
+ord_col = info["orders"]
+cost_col = info["cost"]
 
-# ============================= Pages =============================
+total_revenue = safe_sum(df[rev_col]) if rev_col else np.nan
+total_orders = safe_sum(df[ord_col]) if ord_col else np.nan
+total_cost = safe_sum(df[cost_col]) if cost_col else np.nan
+
+profit = total_revenue - total_cost if all(np.isfinite([total_revenue, total_cost])) else np.nan
+aov = total_revenue / total_orders if np.isfinite(total_orders) and total_orders > 0 else np.nan
+
+
+# ------------------------------------------------
+# NAVIGATION
+# ------------------------------------------------
+page = st.sidebar.radio(
+    "Navigate",
+    ["Home", "KPIs", "Trends", "Products", "Categories", "Regions", "Forecast", "Settings"]
+)
+
+
+# ------------------------------------------------
+# PAGES
+# ------------------------------------------------
 
 # HOME
 if page == "Home":
-    st.title("📦 Dropshipping Analytics — Home")
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Revenue", f"{total_revenue:,.2f}")
-    c2.metric("Orders", f"{total_orders:,.0f}")
-    c3.metric("Profit", f"{profit:,.2f}")
-    c4.metric("AOV", f"{avg_order:,.2f}")
-    st.write("### Dataset Preview")
-    st.dataframe(df.head(100))
+    st.title("📦 Dropshipping Analytics — Dashboard Overview")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.metric("Total Revenue", f"{total_revenue:,.2f}")
+    with c2: st.metric("Total Orders", f"{total_orders:,.0f}")
+    with c3: st.metric("Profit", f"{profit:,.2f}")
+    with c4: st.metric("AOV", f"{aov:,.2f}")
+
+    st.markdown("### 📄 Dataset Preview")
+    st.dataframe(df.head(100), use_container_width=True)
+
 
 # KPIs
-if page == "KPIs":
-    st.title("📊 KPIs Overview")
-    c1,c2,c3 = st.columns(3)
-    c1.metric("Revenue", f"{total_revenue:,.2f}")
-    c2.metric("Orders", f"{total_orders:,.0f}")
-    c3.metric("Profit", f"{profit:,.2f}")
+elif page == "KPIs":
+    st.title("📊 Key Performance Indicators")
 
-# Trends
-if page == "Trends":
-    st.title("📈 Trends Over Time")
-    if info["date"] and rev_c:
-        ts = df.groupby(df[info["date"]].dt.to_period("D"))[rev_c].sum().reset_index()
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Revenue", f"{total_revenue:,.2f}")
+    k2.metric("Orders", f"{total_orders:,.0f}")
+    k3.metric("Profit", f"{profit:,.2f}")
+
+
+# TRENDS
+elif page == "Trends":
+    st.title("📈 Revenue Trends Over Time")
+
+    if info["date"] and rev_col:
+        ts = df.groupby(df[info["date"]].dt.to_period("D"))[rev_col].sum()
+        ts = ts.reset_index()
         ts[info["date"]] = ts[info["date"]].dt.to_timestamp()
-        fig = px.line(ts, x=info["date"], y=rev_c, title="Revenue Trend", markers=True)
+
+        fig = px.line(
+            ts,
+            x=info["date"],
+            y=rev_col,
+            title="Daily Revenue Trend",
+            markers=True
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No valid date column detected.")
+        st.warning("No valid date or revenue column detected.")
 
-# Products
-if page == "Products":
-    st.title("🛍️ Product Analysis")
+
+# PRODUCTS
+elif page == "Products":
+    st.title("🛍️ Product Performance")
+
     prod = info["product"]
-    if prod and rev_c:
-        top = df.groupby(prod)[rev_c].sum().sort_values(ascending=False).head(20).reset_index()
-        st.dataframe(top)
-        fig = px.bar(top, x=prod, y=rev_c, text=rev_c, title="Top Products")
+    if prod and rev_col:
+        top = df.groupby(prod)[rev_col].sum().sort_values(ascending=False).head(20).reset_index()
+
+        st.dataframe(top, use_container_width=True)
+
+        fig = px.bar(top, x=prod, y=rev_col, text=rev_col, title="Top Selling Products")
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No product column detected.")
+        st.warning("Product or revenue column missing.")
 
-# Categories
-if page == "Categories":
-    st.title("📂 Category Analysis")
-    cat = info["category"]
-    if cat and rev_c:
-        mix = df.groupby(cat)[rev_c].sum().reset_index()
-        fig = px.pie(mix, names=cat, values=rev_c)
+
+# CATEGORIES
+elif page == "Categories":
+    st.title("📂 Category Overview")
+
+    if info["category"] and rev_col:
+        mix = df.groupby(info["category"])[rev_col].sum().reset_index()
+
+        fig = px.pie(mix, names=info["category"], values=rev_col)
         st.plotly_chart(fig, use_container_width=True)
 
-# Regions
-if page == "Regions":
-    st.title("🌍 Region Analysis")
-    reg = info["region"]
-    if reg and rev_c:
-        r = df.groupby(reg)[rev_c].sum().reset_index()
-        fig = px.bar(r, x=reg, y=rev_c, title="Region Performance")
+
+# REGIONS
+elif page == "Regions":
+    st.title("🌍 Regional Performance")
+
+    if info["region"] and rev_col:
+        r = df.groupby(info["region"])[rev_col].sum().reset_index()
+        fig = px.bar(r, x=info["region"], y=rev_col, title="Revenue by Region")
         st.plotly_chart(fig, use_container_width=True)
 
-# Forecast
-if page == "Forecast":
-    st.title("🔮 Forecasting")
-    if info["date"] and rev_c:
-        ts = df.groupby(df[info["date"]].dt.to_period("D"))[rev_c].sum().reset_index()
+
+# FORECAST
+elif page == "Forecast":
+    st.title("🔮 Revenue Forecast (Next 30 Days)")
+
+    if info["date"] and rev_col:
+        ts = df.groupby(df[info["date"]].dt.to_period("D"))[rev_col].sum().reset_index()
         ts[info["date"]] = ts[info["date"]].dt.to_timestamp()
+
         ts["t"] = np.arange(len(ts))
-        X = ts[["t"]].values; y = ts[rev_c].values
-        model = LinearRegression().fit(X,y)
-        fut = np.arange(len(ts), len(ts)+30).reshape(-1,1)
-        pred = model.predict(fut)
-        fut_dates = pd.date_range(ts[info["date"]].iloc[-1] + pd.Timedelta(days=1), periods=30)
-        pred_df = pd.DataFrame({info["date"]: fut_dates, "forecast": pred})
-        fig = px.line(ts, x=info["date"], y=rev_c)
-        fig.add_scatter(x=pred_df[info["date"]], y=pred_df["forecast"], mode='lines', name='Forecast')
+        X, y = ts[["t"]].values, ts[rev_col].values
+
+        model = LinearRegression().fit(X, y)
+
+        future = np.arange(len(ts), len(ts) + 30).reshape(-1, 1)
+        predictions = model.predict(future)
+
+        future_dates = pd.date_range(ts[info["date"]].iloc[-1] + pd.Timedelta(days=1),
+                                     periods=30)
+
+        pred_df = pd.DataFrame({info["date"]: future_dates, "forecast": predictions})
+
+        fig = px.line(ts, x=info["date"], y=rev_col, title="Historical Revenue")
+        fig.add_scatter(x=pred_df[info["date"]], y=pred_df["forecast"],
+                        mode="lines", name="Forecast")
+
         st.plotly_chart(fig, use_container_width=True)
 
-# Settings
-if page == "Settings":
-    st.title("⚙️ Settings")
-    st.write("Column inference:")
+
+# SETTINGS
+elif page == "Settings":
+    st.title("⚙️ Settings & Column Mapping")
     st.json(info)
